@@ -1,11 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Created on Sun Jul 13 14:22:54 2025
-
-@author: agraemirolmez
-"""
-
 import warnings
 import yfinance as yf
 import pandas as pd
@@ -22,14 +14,12 @@ warnings.filterwarnings("ignore")
 pd.set_option('display.max_columns', None)
 pd.set_option('display.width', 200)
 
-# --- Configuration (Fixed for Reproducibility) ---
 SEED = 42
 random.seed(SEED)
 np.random.seed(SEED)
 
-# --- Data Download & Preparation (Centralized and Reproducible) ---
 data_file_name = "spy_ohlcv_macro_data_2000_2025.csv"
-start_date, end_date = "2000-01-01", "2025-07-01" # Keep end_date slightly past current time for full data
+start_date, end_date = "2000-01-01", "2025-07-01"
 
 if os.path.exists(data_file_name):
     print(f"Loading raw data from '{data_file_name}' to ensure reproducibility...")
@@ -54,15 +44,8 @@ else:
     spy_base_raw.to_csv(data_file_name, index=True)
     print(f"Raw data downloaded and saved to '{data_file_name}'.")
 
-# --- Feature Engineering Function (NO TARGET CALCULATION HERE) ---
 def create_features(df_segment):
-    """
-    Creates technical and macro features for a given dataframe segment.
-    Ensures calculations are only based on available data within the segment.
-    """
     df_copy = df_segment.copy()
-
-    # Technical Indicators
     df_copy['M30_MA'] = ta.sma(df_copy['Close'], length=30)
     df_copy['M10_MA'] = ta.sma(df_copy['Close'], length=10)
     macd = ta.macd(df_copy['Close'])
@@ -75,40 +58,23 @@ def create_features(df_segment):
     df_copy['StochRSI_14'] = ta.stochrsi(df_copy['Close'], length=14)['STOCHRSIk_14_14_3_3']
     df_copy['Price_Momentum_5D'] = df_copy['Close'].pct_change(5)
     df_copy['Down_Moves'] = (df_copy['Close'].pct_change() < 0).rolling(10).sum()
-    df_copy['MACD_Bearish_Cross']= (ta.macd(df_copy['Close'])['MACDh_12_26_9'] < 0).astype(int)
-    df_copy['Volume_Spike'] = (df_copy['Volume'] > df_copy['Volume'].rolling(20).mean()*1.5).astype(int)
-
-    # Macro Features (check for column existence before calculation)
+    df_copy['MACD_Bearish_Cross'] = (ta.macd(df_copy['Close'])['MACDh_12_26_9'] < 0).astype(int)
+    df_copy['Volume_Spike'] = (df_copy['Volume'] > df_copy['Volume'].rolling(20).mean() * 1.5).astype(int)
     df_copy['VIX_Change_5D'] = df_copy['VIX_Close'].pct_change(5) if 'VIX_Close' in df_copy.columns else np.nan
     df_copy['HYG_IEF'] = df_copy['HYG_Close'] / df_copy['IEF_Close'] if 'HYG_Close' in df_copy.columns and 'IEF_Close' in df_copy.columns else np.nan
     df_copy['Yield_Slope'] = df_copy['TNX_Close'] - df_copy['FVX_Close'] if 'TNX_Close' in df_copy.columns and 'FVX_Close' in df_copy.columns else np.nan
     df_copy['Market_Breadth'] = df_copy['RSP_Close'] / df_copy['Close'] if 'RSP_Close' in df_copy.columns else np.nan
-    
-    # Daily Return is also a feature here, potentially.
-    # If not used as a feature, it's still needed for strategy return calculation.
     df_copy['Daily_Return'] = df_copy['Close'].pct_change()
-
     return df_copy
 
-# --- Target Creation (Centralized and Applied Once on Full Raw Data) ---
-# Calculate the target for the ENTIRE dataset FIRST.
-# This avoids target leakage, as the target for any row is determined globally,
-# and then segments are taken for training/testing.
 print("Calculating target for the entire dataset (forward-looking 30 days)...")
-# Make a copy to add the target without modifying the original raw data directly
 data_with_target = spy_base_raw.copy()
 data_with_target['Target'] = (data_with_target['Close'].shift(-30) > data_with_target['Close']).astype(int)
-
-# Drop rows where the target cannot be calculated (the last 30 days)
-# These rows cannot be used for training or testing a model with this specific target.
 initial_rows_before_na_drop = len(data_with_target)
 data_with_target.dropna(subset=['Target'], inplace=True)
 print(f"Dropped {initial_rows_before_na_drop - len(data_with_target)} rows due to NaN in target (last 30 days).")
 print(f"Dataset size after target creation: {len(data_with_target)} rows.")
 
-
-# --- Define the "Perfect Model" Directly from Your Log ---
-# This is the model configuration that produced your desired results in your previous log.
 perfect_model_info = {
     'Model_Name_Display': "Optimized Strategy (Fixed)",
     'feature_set': ['Price_Momentum_5D', 'StochRSI_14', 'Down_Moves', 'Volume_Spike', 'VIX_Change_5D', 'Market_Breadth'],
@@ -127,16 +93,9 @@ perfect_model_info = {
     'threshold': 0.4
 }
 
-# --- Helper function for performing a Walk-Forward Backtest for a SINGLE model ---
 def run_walk_forward_for_single_model(model_info, data_df, initial_train_end_date, min_test_period_length_arg, approx_annual_days_arg):
-    """
-    Performs a walk-forward backtest for a single model configuration.
-    Features are generated on segments. Target is pre-calculated on the whole dataset.
-    """
     strategy_cumulative_returns = pd.Series([1.0], index=[data_df.index[0]])
-    current_train_end = initial_train_end_date # Start the walk-forward from here
-
-    # Calculate total progress for tqdm based on days in test segments
+    current_train_end = initial_train_end_date
     pbar_total_actual_days = 0
     temp_curr_for_tqdm = initial_train_end_date
     while temp_curr_for_tqdm < data_df.index[-1]:
@@ -144,60 +103,36 @@ def run_walk_forward_for_single_model(model_info, data_df, initial_train_end_dat
         temp_test_end_dt = temp_test_start_dt + pd.Timedelta(days=approx_annual_days_arg)
         if temp_test_end_dt > data_df.index[-1]:
             temp_test_end_dt = data_df.index[-1]
-            
-        # Count actual trading days in this segment
         segment_dates = data_df.loc[temp_test_start_dt : temp_test_end_dt].index
         pbar_total_actual_days += len(segment_dates)
         temp_curr_for_tqdm = temp_test_end_dt
-            
+
     with tqdm(total=pbar_total_actual_days, desc=f"Walk-Forward Backtest for {model_info['Model_Name_Display']}") as pbar:
         while current_train_end < data_df.index[-1]:
             test_start_dt = current_train_end + pd.Timedelta(days=1)
             test_end_dt = test_start_dt + pd.Timedelta(days=approx_annual_days_arg)
-
             if test_end_dt > data_df.index[-1]:
                 test_end_dt = data_df.index[-1]
-
-            # Check if remaining test period is too short or invalid
             if test_start_dt > test_end_dt or len(data_df.loc[test_start_dt:test_end_dt]) < min_test_period_length_arg:
                 if not strategy_cumulative_returns.empty and len(strategy_cumulative_returns.index) > 0:
                     last_val = strategy_cumulative_returns.iloc[-1]
-                    # Fill any remaining dates to the end of the data_df index
                     missing_dates_idx = pd.date_range(start=strategy_cumulative_returns.index[-1] + pd.Timedelta(days=1), end=data_df.index[-1])
                     if not missing_dates_idx.empty:
                         strategy_cumulative_returns = pd.concat([strategy_cumulative_returns, pd.Series(last_val, index=missing_dates_idx)])
-                break # End of loop, no more valid test periods
-
-            # Slice the data_df (which already has pre-calculated target) for current train/test periods
+                break
             current_train_base_segment = data_df.loc[:current_train_end].copy()
             current_test_base_segment = data_df.loc[test_start_dt:test_end_dt].copy()
-
-            # Create features on these segments
             train_df = create_features(current_train_base_segment)
             test_df = create_features(current_test_base_segment)
-            
-            # Re-align targets after feature creation and potential NA drops
-            # Ensure the target column is present and not dropped by feature creation NaNs
             train_df['Target'] = data_df.loc[train_df.index, 'Target']
             test_df['Target'] = data_df.loc[test_df.index, 'Target']
-
-            # Drop NaNs that result from feature calculation (e.g., first few days for MAs)
-            # This must happen AFTER target assignment, so we drop features and their corresponding target rows
             train_df.dropna(subset=model_info['feature_set'] + ['Target'], inplace=True)
-            test_df.dropna(subset=model_info['feature_set'] + ['Target'], inplace=True) # Important: test set needs valid targets for evaluation later
-
-            # Define y_test_single and X_test_single here to ensure they are available for checks
+            test_df.dropna(subset=model_info['feature_set'] + ['Target'], inplace=True)
             X_train_single = train_df[model_info['feature_set']]
             y_train_single = train_df['Target']
             X_test_single = test_df[model_info['feature_set']]
-            y_test_single = test_df['Target'] # For evaluation purposes in a real scenario
-
-            # Robustness Checks for each segment
-            if train_df.empty or test_df.empty or \
-               len(train_df) < min_test_period_length_arg or \
-               len(test_df) < min_test_period_length_arg or \
-               len(np.unique(y_train_single)) < 2: # Training data must have at least two classes
-                
+            y_test_single = test_df['Target']
+            if train_df.empty or test_df.empty or len(train_df) < min_test_period_length_arg or len(test_df) < min_test_period_length_arg or len(np.unique(y_train_single)) < 2:
                 if not strategy_cumulative_returns.empty and len(strategy_cumulative_returns.index) > 0:
                     last_val = strategy_cumulative_returns.iloc[-1]
                     dates_to_fill = pd.date_range(start=test_start_dt, end=test_end_dt)
@@ -205,49 +140,24 @@ def run_walk_forward_for_single_model(model_info, data_df, initial_train_end_dat
                         new_fill_indices = dates_to_fill.difference(strategy_cumulative_returns.index)
                         if not new_fill_indices.empty:
                             strategy_cumulative_returns = pd.concat([strategy_cumulative_returns, pd.Series(last_val, index=new_fill_indices)])
-                pbar.update(len(current_test_base_segment.index)) # Update progress for this skipped segment
+                pbar.update(len(current_test_base_segment.index))
                 current_train_end = test_end_dt
                 continue
-
-            # Ensure all required features are present and not all NaN in current segment DFs
-            # This check is mostly for initial data integrity. dropna above should handle most cases.
-            current_feature_set_train = [f for f in model_info['feature_set'] if f in train_df.columns and not train_df[f].isnull().all()]
-            current_feature_set_test = [f for f in model_info['feature_set'] if f in test_df.columns and not test_df[f].isnull().all()]
-
-            if len(current_feature_set_train) != len(model_info['feature_set']) or \
-               len(current_feature_set_test) != len(model_info['feature_set']):
-                
-                if not strategy_cumulative_returns.empty and len(strategy_cumulative_returns.index) > 0:
-                    last_val = strategy_cumulative_returns.iloc[-1]
-                    dates_to_fill = pd.date_range(start=test_start_dt, end=test_end_dt)
-                    if not dates_to_fill.empty:
-                        new_fill_indices = dates_to_fill.difference(strategy_cumulative_returns.index)
-                        if not new_fill_indices.empty:
-                            strategy_cumulative_returns = pd.concat([strategy_cumulative_returns, pd.Series(last_val, index=new_fill_indices)])
-                pbar.update(len(current_test_base_segment.index)) # Update progress for this skipped segment
-                current_train_end = test_end_dt
-                continue
-
-            if X_train_single.empty or y_train_single.empty or len(np.unique(y_train_single)) < 2 or \
-               X_test_single.empty:
-                pred_binary = np.full(len(test_df), 0) # Default to no position if data is bad
+            if X_train_single.empty or y_train_single.empty or len(np.unique(y_train_single)) < 2 or X_test_single.empty:
+                pred_binary = np.full(len(test_df), 0)
             else:
                 try:
                     model = lgb.LGBMClassifier(**model_info['params'])
                     model.fit(X_train_single, y_train_single)
                     pred_proba_single = model.predict_proba(X_test_single)[:, 1]
                     pred_binary = (pred_proba_single > model_info['threshold']).astype(int)
-                except Exception as e:
-                    # print(f"Error during model training/prediction for period ending {test_end_dt}: {e}. Defaulting to no position.")
+                except Exception:
                     pred_binary = np.full(len(test_df), 0)
-
             oos_df_current_period = pd.DataFrame(index=test_df.index)
             oos_df_current_period['Position'] = pd.Series(pred_binary, index=test_df.index)
-            oos_df_current_period['Daily_Return'] = test_df['Daily_Return'] # This is the SPY daily return from test_df
+            oos_df_current_period['Daily_Return'] = test_df['Daily_Return']
             oos_df_current_period['Position'].fillna(0, inplace=True)
             oos_df_current_period['Strategy_Return'] = oos_df_current_period['Position'].shift(1).fillna(0) * oos_df_current_period['Daily_Return']
-
-            # Update cumulative returns
             if not strategy_cumulative_returns.empty and len(strategy_cumulative_returns.index) > 0:
                 last_cum_ret = strategy_cumulative_returns.iloc[-1]
                 period_strategy_returns_series = (1 + oos_df_current_period['Strategy_Return']).cumprod()
@@ -257,55 +167,39 @@ def run_walk_forward_for_single_model(model_info, data_df, initial_train_end_dat
                     strategy_cumulative_returns = pd.concat([strategy_cumulative_returns, new_returns])
             else:
                 strategy_cumulative_returns = (1 + oos_df_current_period['Strategy_Return']).cumprod()
-
             current_train_end = test_end_dt
-            pbar.update(len(current_test_base_segment.index)) # Update progress based on original raw segment length
-
-    # Reindex to the full data_df index and forward-fill any missing dates
+            pbar.update(len(current_test_base_segment.index))
     return strategy_cumulative_returns.reindex(data_df.index, method='ffill').fillna(1.0)
 
-
-# --- Buy & Hold Cumulative Returns (Overall for the entire period) ---
-# Ensure Buy & Hold is calculated over the same date range as the model will operate,
-# i.e., after the initial target NA drop
 full_bh_daily_returns = data_with_target['Close'].pct_change().fillna(0)
 full_bh_cumulative_returns = (1 + full_bh_daily_returns).cumprod()
-full_bh_cumulative_returns.iloc[0] = 1.0 # Rebase the first value to 1.0
+full_bh_cumulative_returns.iloc[0] = 1.0
 
-# --- Helper function for safe formatting of values or 'N/A' ---
 def format_metric(value, is_percentage=True, decimals=2):
-    if pd.isna(value) or np.isinf(value): # Use pd.isna for robustness with NaNs and NaT
+    if pd.isna(value) or np.isinf(value):
         return 'N/A'
     if is_percentage:
         return f"{value:.{decimals}%}"
     return f"{value:.{decimals}f}"
 
-# --- Set up parameters for the Walk-Forward simulation of the fixed model ---
-initial_train_end_date_for_wf_start = pd.to_datetime("2021-01-01") # Matches the first WF period train end
-
-# This is the start date for your desired "Comparison Period" for reporting (2023-01-01)
+initial_train_end_date_for_wf_start = pd.to_datetime("2021-01-01")
 comparison_reporting_start_date = pd.to_datetime("2023-01-01")
+min_test_period_length = 30
+approx_annual_days = 252
 
-min_test_period_length = 30 # Minimum number of days for a valid test segment
-approx_annual_days = 252 # Approximate number of trading days in a year (length of each WF test segment)
-
-print(f"\n" + "="*50)
+print(f"\n{'='*50}")
 print(f"Final Comparison: {perfect_model_info['Model_Name_Display']} vs. Buy & Hold")
-print("="*50)
-print(f" Starting Walk-Forward Backtest for '{perfect_model_info['Model_Name_Display']}' to generate full cumulative returns...")
+print(f"{'='*50}")
+print(f"Starting Walk-Forward Backtest for '{perfect_model_info['Model_Name_Display']}' to generate full cumulative returns...")
 
-# Run the walk-forward simulation for the fixed model
 strategy_cumulative_returns_overall = run_walk_forward_for_single_model(
     perfect_model_info,
-    data_with_target, # Pass the pre-processed data with target
+    data_with_target,
     initial_train_end_date_for_wf_start,
     min_test_period_length,
     approx_annual_days
 )
 
-# --- Metric Calculations and Data Slicing for Plot (Specific Comparison Period) ---
-# Now, slice the generated strategy cumulative returns to the *desired reporting period*
-# and rebase them to 1.0 at the start of that period.
 model_comparison_returns = strategy_cumulative_returns_overall.loc[comparison_reporting_start_date:].copy()
 if not model_comparison_returns.empty:
     model_comparison_returns = model_comparison_returns / model_comparison_returns.iloc[0]
@@ -318,59 +212,48 @@ if not bh_comparison_returns.empty:
 else:
     bh_comparison_returns = pd.Series([1.0], index=[comparison_reporting_start_date])
 
-# Calculate metrics for the fixed model over the comparison period
 model_daily_returns_comparison = model_comparison_returns.pct_change().dropna()
 if model_daily_returns_comparison.empty:
-    model_total_return, model_ann_return, model_ann_vol, model_sharpe = np.nan,np.nan,np.nan,np.nan
+    model_total_return, model_ann_return, model_ann_vol, model_sharpe = np.nan, np.nan, np.nan, np.nan
 else:
     model_total_return = model_comparison_returns.iloc[-1] - 1
-    # Check if length is sufficient for annualization
-    if len(model_daily_returns_comparison) > 0:
-        model_ann_return = (1 + model_daily_returns_comparison).prod() ** (252 / len(model_daily_returns_comparison)) - 1
-    else:
-        model_ann_return = np.nan
+    model_ann_return = (1 + model_daily_returns_comparison).prod() ** (252 / len(model_daily_returns_comparison)) - 1
     model_ann_vol = model_daily_returns_comparison.std() * np.sqrt(252)
     model_sharpe = model_ann_return / model_ann_vol if model_ann_vol > 0 else np.nan
 
-# Calculate metrics for Buy & Hold over the comparison period
 bh_daily_returns_comparison = bh_comparison_returns.pct_change().dropna()
 if bh_daily_returns_comparison.empty:
-    bh_total_return, bh_ann_return, bh_ann_vol, bh_sharpe = np.nan,np.nan,np.nan,np.nan
+    bh_total_return, bh_ann_return, bh_ann_vol, bh_sharpe = np.nan, np.nan, np.nan, np.nan
 else:
     bh_total_return = bh_comparison_returns.iloc[-1] - 1
-    # Check if length is sufficient for annualization
-    if len(bh_daily_returns_comparison) > 0:
-        bh_ann_return = (1 + bh_daily_returns_comparison).prod() ** (252 / len(bh_daily_returns_comparison)) - 1
-    else:
-        bh_ann_return = np.nan
+    bh_ann_return = (1 + bh_daily_returns_comparison).prod() ** (252 / len(bh_daily_returns_comparison)) - 1
     bh_ann_vol = bh_daily_returns_comparison.std() * np.sqrt(252)
     bh_sharpe = bh_ann_return / bh_ann_vol if bh_ann_vol > 0 else np.nan
 
-
 print("\n--- Model Details (Fixed Optimized Model) ---")
-print(f" Model Name: {perfect_model_info['Model_Name_Display']}")
-print(f" Features: {perfect_model_info['feature_set']}")
-print(f" num_leaves: {perfect_model_info['params']['num_leaves']}, max_depth: {perfect_model_info['params']['max_depth']}")
-print(f" reg_alpha: {perfect_model_info['params']['reg_alpha']}, reg_lambda: {perfect_model_info['params']['reg_lambda']}")
-print(f" scale_pos_weight: {perfect_model_info['params']['scale_pos_weight']}, threshold: {perfect_model_info['threshold']}")
-print("="*50)
+print(f"Model Name: {perfect_model_info['Model_Name_Display']}")
+print(f"Features: {perfect_model_info['feature_set']}")
+print(f"num_leaves: {perfect_model_info['params']['num_leaves']}, max_depth: {perfect_model_info['params']['max_depth']}")
+print(f"reg_alpha: {perfect_model_info['params']['reg_alpha']}, reg_lambda: {perfect_model_info['params']['reg_lambda']}")
+print(f"scale_pos_weight: {perfect_model_info['params']['scale_pos_weight']}, threshold: {perfect_model_info['threshold']}")
+print(f"{'='*50}")
 
 print(f"\n--- Performance Metrics (Comparison Period: {comparison_reporting_start_date.date()} - {data_with_target.index[-1].date()}) ---")
 print(f"{'Metric':<20} {'Model':<20} {'Buy & Hold':<20}")
-print("-" * 60)
+print(f"{'-'*60}")
 print(f"{'Total Return':<20} {format_metric(model_total_return):<20} {format_metric(bh_total_return):<20}")
 print(f"{'Annualized Return':<20} {format_metric(model_ann_return):<20} {format_metric(bh_ann_return):<20}")
 print(f"{'Annualized Volatility':<20} {format_metric(model_ann_vol):<20} {format_metric(bh_ann_vol):<20}")
 print(f"{'Sharpe Ratio':<20} {format_metric(model_sharpe, False):<20} {format_metric(bh_sharpe, False):<20}")
-print("="*60)
+print(f"{'='*60}")
 
 plt.figure(figsize=(12, 7))
-plt.plot(model_comparison_returns.index, model_comparison_returns, label=f'Strategy: {perfect_model_info["Model_Name_Display"]}', color='blue')
-plt.plot(bh_comparison_returns.index, bh_comparison_returns, label='Buy & Hold (SPY)', color='red', linestyle='--')
-plt.title(f'Strategy ({perfect_model_info["Model_Name_Display"]}) vs. Buy & Hold Cumulative Returns (Starting: {comparison_reporting_start_date.date()})')
-plt.xlabel('Date')
-plt.ylabel('Cumulative Return')
-plt.grid(True, linestyle=':', alpha=0.6)
+plt.plot(model_comparison_returns.index, model_comparison_returns, label=f"Strategy: {perfect_model_info['Model_Name_Display']}")
+plt.plot(bh_comparison_returns.index, bh_comparison_returns, label="Buy & Hold (SPY)", linestyle="--")
+plt.title(f"Strategy ({perfect_model_info['Model_Name_Display']}) vs. Buy & Hold Cumulative Returns (Starting: {comparison_reporting_start_date.date()})")
+plt.xlabel("Date")
+plt.ylabel("Cumulative Return")
+plt.grid(True, linestyle=":", alpha=0.6)
 plt.legend()
 formatter = mticker.PercentFormatter(xmax=1.0, decimals=0)
 plt.gca().yaxis.set_major_formatter(formatter)
