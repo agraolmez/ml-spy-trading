@@ -1,0 +1,11 @@
+# Python 3.12 or 3.13. pandas-ta 0.4.71b0 requires Python >=3.12.
+# Keep NumPy compatible with the Numba version required by pandas-ta.
+pandas-ta==0.4.71b0
+numpy==2.2.6
+pandas==2.3.2
+yfinance>=0.2.65,<2
+lightgbm>=4.6,<5
+tqdm>=4.67.1,<5
+scikit-learn>=1.6,<2
+matplotlib>=3.10,<4
+openpyxl>=3.1.5,<4

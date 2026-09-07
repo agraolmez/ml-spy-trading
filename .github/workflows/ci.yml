@@ -9,12 +9,51 @@ permissions:
   contents: read
 
 jobs:
-  syntax:
+  smoke:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install research dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Check dependency consistency
+        run: python -m pip check
       - name: Compile Python entry points
         run: python -m py_compile final.py optimal_vs_spy.py
+      - name: Test indicators and model on synthetic data
+        env:
+          MPLBACKEND: Agg
+        run: |
+          python - <<'PY'
+          import lightgbm as lgb
+          import matplotlib.pyplot as plt
+          import numpy as np
+          import openpyxl
+          import pandas as pd
+          import pandas_ta as ta
+          import sklearn
+          import tqdm
+          import yfinance
+
+          close = pd.Series(np.linspace(100, 120, 80) + np.sin(np.arange(80)))
+          rsi = ta.rsi(close, length=14).dropna()
+          assert len(rsi) > 0 and np.isfinite(rsi.to_numpy()).all()
+          features = np.column_stack([np.arange(80), close.to_numpy()])
+          target = np.arange(80) % 2
+          model = lgb.LGBMClassifier(n_estimators=5, n_jobs=1, verbosity=-1)
+          model.fit(features, target)
+          probabilities = model.predict_proba(features)
+          assert probabilities.shape == (80, 2)
+          assert np.isfinite(probabilities).all()
+          plt.figure()
+          plt.plot(close)
+          plt.close("all")
+          print("Dependency, indicator, and model smoke checks passed.")
+          PY
